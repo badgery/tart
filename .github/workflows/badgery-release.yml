@@ -3,9 +3,15 @@ name: Badgery Release
 # Badgery's builds of this fork: arm64 only, signed with Badgery's Developer ID
 # and without com.apple.vm.networking, which needs Cirrus Labs' provisioning
 # profile (so --net-bridged is unavailable)
+#
+# A tag builds, signs and publishes a release. A push to the default branch only
+# builds, to save the cache: a tag's run can restore caches from the default
+# branch but not from earlier tags
 
 on:
   push:
+    branches:
+      - badgery
     tags:
       - "*-badgery.*"
 
@@ -22,6 +28,7 @@ jobs:
       contents: write
     env:
       VERSION: ${{ github.ref_name }}
+      RELEASE: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -29,11 +36,25 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Select the newest Xcode
+        id: xcode
         run: |
           XCODE=$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)
           sudo xcode-select -s "$XCODE"
           swift --version
+          echo "version=$(basename "$XCODE" .app)" >> "$GITHUB_OUTPUT"
+      - name: Cache Swift packages and build products
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            .build/arm64
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/org.swift.swiftpm
+          key: tart-arm64-${{ steps.xcode.outputs.version }}-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: |
+            tart-arm64-${{ steps.xcode.outputs.version }}-${{ hashFiles('Package.resolved') }}-
+            tart-arm64-${{ steps.xcode.outputs.version }}-
       - name: Import signing certificate
+        if: env.RELEASE == 'true'
         env:
           MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
           MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
@@ -61,6 +82,7 @@ jobs:
           .ci/set-version.sh
           sh .ci/build-release.sh arm64
       - name: Assemble, sign and notarize
+        if: env.RELEASE == 'true'
         env:
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
@@ -101,6 +123,7 @@ jobs:
           shasum -a 256 tart.tar.gz "$APP_PATH/Contents/MacOS/tart" | tee SHA256SUMS
           codesign --display --requirements - "$APP_PATH" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Publish
+        if: env.RELEASE == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -109,7 +132,7 @@ jobs:
             --title "$VERSION" \
             --notes "Badgery build of Tart $VERSION: arm64, signed by Badgery, adds \`tart run --vsock-socket\`. Without com.apple.vm.networking, so --net-bridged is unavailable."
       - name: Remove signing material
-        if: always()
+        if: always() && env.RELEASE == 'true'
         run: |
           security delete-keychain "$RUNNER_TEMP/build.keychain" || true
           rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/certificate.p12"
