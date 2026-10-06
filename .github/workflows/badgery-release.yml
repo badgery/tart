@@ -23,7 +23,7 @@ jobs:
     if: github.repository == 'badgery/tart'
     name: Release
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: write
     env:
@@ -113,7 +113,7 @@ jobs:
             --key-id "$MACOS_NOTARY_KEY_ID" \
             --issuer "$MACOS_NOTARY_ISSUER_ID" \
             --wait \
-            --timeout 20m
+            --timeout 60m
           xcrun stapler staple "$APP_PATH"
           xcrun stapler validate "$APP_PATH"
           spctl --assess --type execute --verbose=4 "$APP_PATH"
