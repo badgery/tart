@@ -1,0 +1,115 @@
+name: Badgery Release
+
+# Badgery's builds of this fork: arm64 only, signed with Badgery's Developer ID
+# and without com.apple.vm.networking, which needs Cirrus Labs' provisioning
+# profile (so --net-bridged is unavailable)
+
+on:
+  push:
+    tags:
+      - "*-badgery.*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: github.repository == 'badgery/tart'
+    name: Release
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select the newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)
+          sudo xcode-select -s "$XCODE"
+          swift --version
+      - name: Import signing certificate
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+        run: |
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 32)
+          echo "$MACOS_SIGN_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          echo "$MACOS_NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/build.keychain"
+          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/build.keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/build.keychain"
+          security import "$RUNNER_TEMP/certificate.p12" \
+            -k "$RUNNER_TEMP/build.keychain" \
+            -P "$MACOS_SIGN_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$RUNNER_TEMP/build.keychain"
+          security list-keychain -d user -s "$RUNNER_TEMP/build.keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certificate.p12"
+      - name: Build
+        run: |
+          .ci/set-version.sh
+          sh .ci/build-release.sh arm64
+      - name: Assemble, sign and notarize
+        env:
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          APP_PATH="dist/tart.app"
+          mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
+          cp .build/prebuilt/arm64/tart "$APP_PATH/Contents/MacOS/tart"
+          cp Resources/Info.plist "$APP_PATH/Contents/"
+          cp "Resources/actool/UPW Tart.icns" "Resources/actool/Assets.car" "$APP_PATH/Contents/Resources/"
+
+          IDENTITY=$(security find-identity -v -p codesigning "$RUNNER_TEMP/build.keychain" \
+            | sed -n 's/.*\([0-9A-F]\{40\}\) "Developer ID Application: .*/\1/p' | head -n 1)
+          codesign \
+            --force \
+            --verbose \
+            --sign "$IDENTITY" \
+            --timestamp \
+            --options runtime \
+            --keychain "$RUNNER_TEMP/build.keychain" \
+            --entitlements Resources/tart-badgery.entitlements \
+            "$APP_PATH"
+          codesign --verify --strict --verbose=2 "$APP_PATH"
+          "$APP_PATH/Contents/MacOS/tart" --version
+
+          ditto -c -k --keepParent "$APP_PATH" "$RUNNER_TEMP/tart-notarization.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/tart-notarization.zip" \
+            --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$MACOS_NOTARY_KEY_ID" \
+            --issuer "$MACOS_NOTARY_ISSUER_ID" \
+            --wait \
+            --timeout 20m
+          xcrun stapler staple "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+          spctl --assess --type execute --verbose=4 "$APP_PATH"
+
+          cp LICENSE dist/
+          tar -C dist -czf tart.tar.gz tart.app LICENSE
+          shasum -a 256 tart.tar.gz "$APP_PATH/Contents/MacOS/tart" | tee SHA256SUMS
+          codesign --display --requirements - "$APP_PATH" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$VERSION" tart.tar.gz SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$VERSION" \
+            --notes "Badgery build of Tart $VERSION: arm64, signed by Badgery, adds \`tart run --vsock-socket\`. Without com.apple.vm.networking, so --net-bridged is unavailable."
+      - name: Remove signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain" || true
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/certificate.p12"
