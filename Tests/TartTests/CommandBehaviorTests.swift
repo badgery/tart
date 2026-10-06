@@ -122,6 +122,24 @@ final class CommandBehaviorTests: XCTestCase {
     }
   }
 
+  func testSoftnetControlSocketImpliesSoftnetAndExcludesControlFD() throws {
+    try withTemporaryTartHome {
+      let vmDir = try VMStorageLocal().create("softnet-control")
+      try config().save(toURL: vmDir.configURL)
+      XCTAssertTrue(FileManager.default.createFile(atPath: vmDir.nvramURL.path, contents: Data()))
+      XCTAssertTrue(FileManager.default.createFile(atPath: vmDir.diskURL.path, contents: Data()))
+
+      let command = try Run.parseAsRoot(["softnet-control", "--net-softnet-control-socket"]) as! Run
+      XCTAssertTrue(command.netSoftnetControlSocket)
+      XCTAssertTrue(command.netSoftnet)
+      XCTAssertEqual(vmDir.softnetControlSocketURL.lastPathComponent, "softnet.sock")
+
+      XCTAssertThrowsError(try Run.parseAsRoot([
+        "softnet-control", "--net-softnet-control-socket", "--net-softnet-control-fd=3",
+      ]))
+    }
+  }
+
   func testStandaloneDeleteDoesNotInitializeContentStore() throws {
     try withTemporaryTartHome {
       let vmDir = try VMStorageLocal().create("standalone")

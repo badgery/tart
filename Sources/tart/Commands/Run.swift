@@ -234,6 +234,13 @@ struct Run: AsyncParsableCommand {
   """, valueName: "file descriptor"))
   var netSoftnetControlFd: Int32?
 
+  @Flag(help: ArgumentHelp("Serve the Softnet control channel on softnet.sock in the VM's directory", discussion: """
+  Each connection to softnet.sock may send Softnet control requests, one per line, and receives one response line per request. Connections are served one at a time. This can be used to dynamically replace Softnet allow and block lists while the VM is running, like --net-softnet-control-fd, without having to hold a file descriptor for the life of the VM.
+
+  The socket is created with mode 0600, so only the user running "tart run" and root can connect. Implies --net-softnet.
+  """))
+  var netSoftnetControlSocket: Bool = false
+
   @Option(help: ArgumentHelp("Comma-separated list of TCP ports to expose (e.g. --net-softnet-expose 2222:22,8080:80)", discussion: """
   Options are comma-separated and are as follows:
 
@@ -345,8 +352,12 @@ struct Run: AsyncParsableCommand {
     }
 
     // Automatically enable --net-softnet when any of its related options are specified
-    if netSoftnetAllow != nil || netSoftnetBlock != nil || netSoftnetExpose != nil || netSoftnetControlFd != nil {
+    if netSoftnetAllow != nil || netSoftnetBlock != nil || netSoftnetExpose != nil || netSoftnetControlFd != nil || netSoftnetControlSocket {
       netSoftnet = true
+    }
+
+    if netSoftnetControlSocket && netSoftnetControlFd != nil {
+      throw ValidationError("--net-softnet-control-socket and --net-softnet-control-fd are mutually exclusive")
     }
 
     // Check that no more than one network option is specified
@@ -729,7 +740,12 @@ struct Run: AsyncParsableCommand {
     if netSoftnet {
       let config = try VMConfig.init(fromURL: vmDir.configURL)
 
-      return try Softnet(vmMACAddress: config.macAddress.string, extraArguments: softnetExtraArguments, controlFD: netSoftnetControlFd)
+      var controlFD = netSoftnetControlFd
+      if netSoftnetControlSocket {
+        controlFD = try SoftnetControlSocket.start(vmDir.softnetControlSocketURL)
+      }
+
+      return try Softnet(vmMACAddress: config.macAddress.string, extraArguments: softnetExtraArguments, controlFD: controlFD)
     }
 
     if netHost {

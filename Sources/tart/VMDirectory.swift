@@ -33,6 +33,10 @@ struct VMDirectory: Prunable {
     URL(fileURLWithPath: "control.sock", relativeTo: baseURL)
   }
 
+  var softnetControlSocketURL: URL {
+    URL(fileURLWithPath: "softnet.sock", relativeTo: baseURL)
+  }
+
   func vsockSocketURL(port: UInt32) -> URL {
     URL(fileURLWithPath: "vsock-\(port).sock", relativeTo: baseURL)
   }
