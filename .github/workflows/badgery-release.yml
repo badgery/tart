@@ -79,7 +79,9 @@ jobs:
           rm "$RUNNER_TEMP/certificate.p12"
       - name: Build
         run: |
-          .ci/set-version.sh
+          # Report upstream's version: the guest agent in macOS guests reads it from a
+          # console port name and exits when it doesn't accept it, as with 2.40.1-badgery.2
+          VERSION="${VERSION%%-badgery.*}" .ci/set-version.sh
           sh .ci/build-release.sh arm64
       - name: Assemble, sign and notarize
         if: env.RELEASE == 'true'
